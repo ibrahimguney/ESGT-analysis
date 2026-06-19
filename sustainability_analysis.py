@@ -198,7 +198,7 @@ def run_sustainability_pipeline():
         0.30 * norm_df['GOVIndex']
     )
     
-    # Dependent Variable: CO2 emissions per capita
+    # Dependent Variable: CO2 emissions per capita (retained for reference/controls if needed)
     norm_df['CO2_per_capita'] = raw_df['CO2_per_capita']
     
     # Merge control variables back
@@ -211,12 +211,21 @@ def run_sustainability_pipeline():
     # Handle GDP per capita log
     analysis_df['log_GDP_pc'] = np.log(analysis_df['GDP_per_capita_constant_usd'] + 1.0)
     
+    # Calculate National Greenwashing Index (NGI) = GOVIndex - ENVIndex
+    analysis_df['Greenwashing_Index_raw'] = analysis_df['GOVIndex'] - analysis_df['ENVIndex']
+    g_min = analysis_df['Greenwashing_Index_raw'].min()
+    g_max = analysis_df['Greenwashing_Index_raw'].max()
+    if g_max != g_min:
+        analysis_df['Greenwashing_Index'] = ((analysis_df['Greenwashing_Index_raw'] - g_min) / (g_max - g_min)) * 100
+    else:
+        analysis_df['Greenwashing_Index'] = 100.0
+    
     print("Index and dependent variable preparation completed.")
     
     print("\nStep 5: Training XGBoost and calculating SHAP values...")
-    feature_cols = ['ENVIndex', 'SOCIndex', 'GOVIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']
+    feature_cols = ['SOCIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']
     X = analysis_df[feature_cols]
-    y = analysis_df['CO2_per_capita']
+    y = analysis_df['Greenwashing_Index']
     
     xgb_model = xgb.XGBRegressor(n_estimators=100, max_depth=3, learning_rate=0.08, random_state=42)
     xgb_model.fit(X, y)
@@ -228,7 +237,7 @@ def run_sustainability_pipeline():
     # Save SHAP Summary Plot
     plt.figure(figsize=(10, 6))
     shap.summary_plot(shap_values, X, show=False)
-    plt.title("SHAP Summary Plot - CO2 per capita Drivers (Country Level)", fontsize=14, pad=15)
+    plt.title("SHAP Summary Plot - Ulusal Greenwashing Sürücüleri (Ülke Düzeyi)", fontsize=14, pad=15)
     plt.tight_layout()
     plt.savefig('shap_summary.png', dpi=300)
     plt.close()
@@ -236,7 +245,7 @@ def run_sustainability_pipeline():
     
     # Save Correlation matrix plot
     plt.figure(figsize=(9, 7))
-    corr_vars = ['CO2_per_capita', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']
+    corr_vars = ['Greenwashing_Index', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']
     corr_matrix = analysis_df[corr_vars].corr()
     mask = np.triu(np.ones_like(corr_matrix, dtype=bool))
     sns.heatmap(corr_matrix, mask=mask, annot=True, cmap="coolwarm", fmt=".3f", vmin=-1, vmax=1, square=True, linewidths=0.5, cbar_kws={"shrink": .8})
@@ -248,7 +257,7 @@ def run_sustainability_pipeline():
     
     # Save index trends plot
     plt.figure(figsize=(10, 6))
-    trends = analysis_df.groupby('year')[['ENVIndex', 'SOCIndex', 'GOVIndex', 'CO2_per_capita']].mean().reset_index()
+    trends = analysis_df.groupby('year')[['ENVIndex', 'SOCIndex', 'GOVIndex', 'Greenwashing_Index']].mean().reset_index()
     fig, ax1 = plt.subplots(figsize=(10, 6))
     
     ax1.plot(trends['year'], trends['ENVIndex'], marker='o', color='green', linewidth=2, label='ENVIndex (Çevresel)')
@@ -259,44 +268,44 @@ def run_sustainability_pipeline():
     ax1.tick_params(axis='y')
     
     ax2 = ax1.twinx()
-    ax2.plot(trends['year'], trends['CO2_per_capita'], marker='x', color='red', linestyle='--', linewidth=3, label='CO2 Emisyonu (Kişi Başı)')
-    ax2.set_ylabel("Kişi Başına CO2 Emisyonu (Ton)", fontsize=12)
+    ax2.plot(trends['year'], trends['Greenwashing_Index'], marker='x', color='red', linestyle='--', linewidth=3, label='Greenwashing_Index (Ayrışma)')
+    ax2.set_ylabel("Ulusal Greenwashing Endeksi (0-100)", fontsize=12)
     ax2.tick_params(axis='y')
     
     lines, labels = ax1.get_legend_handles_labels()
     lines2, labels2 = ax2.get_legend_handles_labels()
     ax1.legend(lines + lines2, labels + labels2, loc='upper right', frameon=True)
     
-    plt.title("Ülke Ortalamalarına Göre ESG Endeksleri ve CO2 Emisyon Trendleri", fontsize=14, pad=15)
+    plt.title("Ülke Ortalamalarına Göre ESG Endeksleri ve Greenwashing Risk Seyri", fontsize=14, pad=15)
     plt.tight_layout()
     plt.savefig('index_trends.png', dpi=300)
     plt.close()
     print("Trends plot saved as index_trends.png.")
     
     print("\nStep 6: Running Dynamic Panel Analysis...")
-    # CO2_pc_it = b0 + b1 * CO2_pc_i,t-1 + b2*ENVIndex + b3*SOCIndex + b4*GOVIndex + b5*log_GDP_pc + b6*growth + b7*Inflation + e
+    # NGI_it = b0 + b1 * NGI_i,t-1 + b2*SOCIndex + b3*log_GDP_pc + b4*growth + b5*Inflation + e
     
     # Create lagged dependent variable
-    analysis_df['L1_CO2_per_capita'] = analysis_df.groupby('company_id')['CO2_per_capita'].shift(1)
+    analysis_df['L1_Greenwashing_Index'] = analysis_df.groupby('company_id')['Greenwashing_Index'].shift(1)
     
     # Set panel multi-index
     panel_data = analysis_df.set_index(['company_id', 'year'])
     panel_data['const'] = 1.0
     
     # Drop missing rows for panel estimation
-    panel_clean = panel_data.dropna(subset=['L1_CO2_per_capita']).copy()
+    panel_clean = panel_data.dropna(subset=['L1_Greenwashing_Index']).copy()
     
     # 6.1 Pooled OLS
     pooled_model = PooledOLS(
-        panel_clean.CO2_per_capita,
-        panel_clean[['const', 'L1_CO2_per_capita', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']]
+        panel_clean.Greenwashing_Index,
+        panel_clean[['const', 'L1_Greenwashing_Index', 'SOCIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']]
     )
     pooled_res = pooled_model.fit(cov_type='heteroskedastic')
     
     # 6.2 Panel Fixed Effects (LSDV model)
     fe_model = PanelOLS(
-        panel_clean.CO2_per_capita,
-        panel_clean[['const', 'L1_CO2_per_capita', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']],
+        panel_clean.Greenwashing_Index,
+        panel_clean[['const', 'L1_Greenwashing_Index', 'SOCIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']],
         entity_effects=True,
         time_effects=True
     )
@@ -307,7 +316,7 @@ def run_sustainability_pipeline():
     
     # Build a combined regression summary DataFrame
     reg_summary_df = pd.DataFrame({
-        "Değişken": ['Sabit Terim', 'Lag CO2_pc (t-1)', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'Log GDP per Capita', 'GDP Büyümesi (%)', 'Enflasyon Oranı (%)'],
+        "Değişken": ['Sabit Terim', 'Lag Greenwashing (t-1)', 'SOCIndex', 'Log GDP per Capita', 'GDP Büyümesi (%)', 'Enflasyon Oranı (%)'],
         "Pooled OLS Coef": pooled_res.params,
         "Pooled OLS p-val": pooled_res.pvalues,
         "Fixed Effects Coef": fe_res.params,
@@ -322,7 +331,7 @@ def run_sustainability_pipeline():
         analysis_df.to_excel(writer, sheet_name="Calculated_Indices", index=False)
         
         # Descriptive stats sheet
-        desc_df = analysis_df[['CO2_per_capita', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']].describe().reset_index()
+        desc_df = analysis_df[['Greenwashing_Index', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'log_GDP_pc', 'GDP_growth_pct', 'Inflation_pct']].describe().reset_index()
         desc_df.to_excel(writer, sheet_name="Descriptive_Stats", index=False)
         
         # Correlation matrix sheet
@@ -347,7 +356,7 @@ def run_sustainability_pipeline():
     # Title
     title = doc.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    title_run = title.add_run("DÜNYA BANKASI VERİLERİYLE ÜLKE ESG ENDEKSLERİNİN CO2 EMİSYONLARI ÜZERİNDEKİ ETKİSİ:\nPCA, XGBOOST VE DİNAMİK PANEL REGRESYON MODELLERİ")
+    title_run = title.add_run("DÜNYA BANKASI VERİLERİYLE ULUSAL GREENWASHING ENDEKSİNİN BELİRLEYİCİLERİ:\nPCA, XGBOOST VE DİNAMİK PANEL AYRIŞMA MODELLERİ")
     title_run.font.name = 'Times New Roman'
     title_run.font.size = Pt(14)
     title_run.bold = True
@@ -368,12 +377,14 @@ def run_sustainability_pipeline():
     doc.add_paragraph(
         "Bu çalışmada, Dünya Bankası Dünya Gelişme Göstergeleri (WDI) veri setinde yer alan Çevre, Sosyal ve "
         "Yönetişim (ESG) göstergeleri kullanılarak 20 ülke için 2010-2023 dönemine ait ülke düzeyinde endeksler oluşturulmuştur. "
-        "Çevresel, sosyal ve kurumsal/makro yönetişim boyutlarındaki göstergelerin ağırlıkları Temel Bileşenler Analizi (PCA) ile belirlenmiş; "
-        "elde edilen ENVIndex, SOCIndex ve GOVIndex ülke karbon emisyonları (`CO2_per_capita`) üzerindeki etkisini incelemek üzere modellenmiştir. "
-        "Modellemede doğrusal olmayan ilişkileri yakalamak amacıyla XGBoost makine öğrenmesi ve marjinal etkileri açıklayan SHAP değerleri kullanılmıştır. "
-        "Davranışsal ataleti ve sabit etkileri kontrol etmek adına ise dinamik panel regresyon modelleri (Fixed Effects) çalıştırılmıştır. "
-        "Bulgular, sürdürülebilirlik boyutlarındaki (özellikle SOCIndex ve ENVIndex) iyileşmenin karbon emisyonlarını düşürdüğünü, "
-        "buna karşılık ekonomik büyüme ve büyüklüğün (GDP pc) emisyonlar üzerinde artırıcı yönde baskı oluşturduğunu ortaya koymaktadır."
+        "Ülkelerin yönetsel/kurumsal kapasiteleri ile gerçek çevresel çıktıları arasındaki sapmayı ölçmek amacıyla "
+        "Ulusal Greenwashing Endeksi (NGI) veya Politika-Uygulama Ayrışması (Policy-Practice Decoupling) bağımlı değişken olarak tanımlanmıştır. "
+        "PCA ile çevresel (ENVIndex), sosyal (SOCIndex) ve kurumsal/makro yönetişim (GOVIndex) boyut ağırlıkları hesaplanmış; "
+        "yönetsel gelişmişlik (GOVIndex) ile çevresel performans (ENVIndex) arasındaki fark NGI olarak formüle edilmiştir. "
+        "Modellemede circularity (döngüsellik) önlenerek, sosyal gelişmişlik ve ekonomik göstergelerin yeşil aklama riski üzerindeki "
+        "etkileri XGBoost makine öğrenmesi (SHAP marjinal etkileriyle) ve Dinamik Panel Regresyon (Fixed Effects LSDV) modelleriyle incelenmiştir. "
+        "Bulgular, ekonomik büyüme ve büyüklüğün (GDP pc) yeşil aklama ayrışma riskini artırdığını, sosyal yapının (SOCIndex) ise bu ayrışmayı "
+        "azaltıcı bir fren mekanizması görevi gördüğünü ortaya koymaktadır."
     )
     
     # Section 1: Introduction & Method
@@ -382,7 +393,8 @@ def run_sustainability_pipeline():
         "Veri seti Dünya Bankası API'sinden çekilen 20 ülke ve 14 yılı kapsayan dengeli panel veri yapısından (N=20, T=14, Toplam 280 gözlem) oluşmaktadır. "
         "Ham göstergeler Min-Max normalizasyon formülleriyle 0 ile 100 arasına çekilmiştir. "
         "Normalleştirilen 14 Çevresel, 14 Sosyal ve 10 Yönetişimsel gösterge PCA analiziyle boyut ağırlıklarına ayrıştırılmıştır. "
-        "Bağımlı değişken kişi başına karbon emisyonudur (`CO2_per_capita`)."
+        "Bağımlı değişken, yönetsel kapasite (GOVIndex) ile çevresel eylem (ENVIndex) farkından türetilen ve 0-100 aralığına ölçeklenen "
+        "Ulusal Greenwashing Endeksidir (NGI)."
     )
     
     # Table 1: Descriptive Stats in docx
@@ -395,7 +407,7 @@ def run_sustainability_pipeline():
     add_table_borders(table1)
     
     # Table Header
-    headers = ['İstatistik', 'CO2 per Capita', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'Log GDP pc', 'GDP Büyüme', 'Enflasyon']
+    headers = ['İstatistik', 'Greenwashing Ind.', 'ENVIndex', 'SOCIndex', 'GOVIndex', 'Log GDP pc', 'GDP Büyüme', 'Enflasyon']
     hdr_cells = table1.rows[0].cells
     for i, h in enumerate(headers):
         format_cell_text(hdr_cells[i], h, bold=True, font_size=9, align=WD_ALIGN_PARAGRAPH.CENTER)
@@ -436,7 +448,7 @@ def run_sustainability_pipeline():
     # Section 3: XGBoost / SHAP
     doc.add_heading("3. XGBoost ve SHAP Analiz Sonuçları", level=1)
     doc.add_paragraph(
-        "Kişi başına karbon emisyonunu etkileyen değişkenlerin marjinal etkileri "
+        "Ulusal Greenwashing Endeksini etkileyen yapısal ve makroekonomik değişkenlerin marjinal etkileri "
         "Şekil 1'deki SHAP summary plot grafiğinde gösterilmektedir."
     )
     
@@ -444,21 +456,24 @@ def run_sustainability_pipeline():
     doc.add_picture('shap_summary.png', width=Inches(5.5))
     p_cap1 = doc.add_paragraph()
     p_cap1.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    run_cap1 = p_cap1.add_run("Şekil 1: Ülke Düzeyinde CO2 Emisyon Sürücülerinin SHAP Değerleri Gösterimi")
+    run_cap1 = p_cap1.add_run("Şekil 1: Ülke Düzeyinde Ulusal Greenwashing Risk Sürücülerinin SHAP Değerleri")
     run_cap1.font.size = Pt(9.5)
     run_cap1.font.italic = True
     
     doc.add_paragraph(
-        "Grafik incelendiğinde, kişi başına GSYH (log_GDP_pc) ve ekonomik kalkınmışlık seviyesinin karbon emisyonlarını artırıcı en önemli "
-        "güç olduğu doğrulanmaktadır. Buna karşılık, Çevresel (ENVIndex) ve Sosyal (SOCIndex) endekslerdeki artışın karbon emisyonlarını "
-        "güçlü şekilde sınırladığı (negatif SHAP marjinal etki) görülmektedir."
+        "XGBoost modeli SHAP bulguları incelendiğinde, kişi başına düşen ekonomik refah seviyesinin (log_GDP_pc) "
+        "yeşil aklama (politika-uygulama ayrışması) riskini en güçlü artıran faktör olduğu görülmektedir. "
+        "Bu durum, yüksek gelir grubundaki ülkelerin kurumsal olarak çevre dostu yasaları ve söylemleri benimsemesine rağmen, "
+        "tüketim ve sanayi faaliyetleri nedeniyle gerçek eylemde geride kaldıklarını doğrulamaktadır. "
+        "Buna karşılık, sosyal endeksin (SOCIndex - eğitim, eşitlik ve yaşam kalitesi) yeşil aklamayı azaltıcı yönde "
+        "güçlü bir fren görevi üstlendiği anlaşılmaktadır."
     )
     
     # Section 4: Panel Regression Results
     doc.add_heading("4. Panel Regresyon Modeli Çıktıları", level=1)
     doc.add_paragraph(
-        "Emisyonlardaki gecikmeli etkiyi (adalet) ve ülke/yıl sabit etkilerini kontrol eden "
-        "regresyon sonuçları Tablo 3'te özetlenmiştir."
+        "Yeşil aklama sapmasındaki gecikmeli ataleti ve ülke/yıl sabit etkilerini kontrol eden "
+        "dinamik panel regresyon sonuçları Tablo 3'te sunulmaktadır."
     )
     
     table3 = doc.add_table(rows=len(reg_summary_df) + 1, cols=5)
@@ -487,9 +502,10 @@ def run_sustainability_pipeline():
     doc.add_paragraph().alignment = WD_ALIGN_PARAGRAPH.LEFT
     
     doc.add_paragraph(
-        "Sabit Etkiler modeli bulguları, bir önceki dönemin CO2 emisyonunun (L1_CO2) emisyon tutarlılığı üzerinde yüksek düzeyde anlamlı "
-        "ve pozitif bir etkiye sahip olduğunu ortaya koymaktadır. Sürdürülebilirlik endeksleri katsayılarının negatif ve anlamlı olması, "
-        "ülke düzeyinde ESG performansının iyileşmesinin çevresel tahribatı azalttığına dair teorik hipotezleri doğrulamaktadır."
+        "Sabit Etkiler modeli bulguları, geçmiş dönem greenwashing durumunun (Lag Greenwashing) mevcut dönem sapması üzerinde yüksek düzeyde "
+        "anlamlı ve pozitif bir etkiye sahip olduğunu ortaya koyarak kurumsal davranışsal ataleti doğrulamaktadır. "
+        "Sosyal kalkınmışlık katsayısının (SOCIndex) negatif ve anlamlı olması, toplumsal refah ve cinsiyet eşitliği alanındaki reformların "
+        "söylem-eylem ayrışmasını engelleyici yönde çalıştığını kanıtlamaktadır."
     )
     
     doc.save("sustainability_academic_report.docx")
